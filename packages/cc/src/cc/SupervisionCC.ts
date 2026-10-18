@@ -111,6 +111,9 @@ export class SupervisionCCAPI extends PhysicalCCAPI {
 				transmitOptions: TransmitOptions.DEFAULT_NOACK,
 				// Only try sending the report once. If it fails, the node will ask again
 				maxSendAttempts: 1,
+				// A failed best-effort reply must not mark the node dead and
+				// discard unrelated transactions waiting for it.
+				changeNodeStatusOnMissingACK: false,
 				// Don't keep the transaction alive to verify S2 delivery, or receiving
 				// other commands from the node may interfere with it
 				s2VerifyDelivery: false,
