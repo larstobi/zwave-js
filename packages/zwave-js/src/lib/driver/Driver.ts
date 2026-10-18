@@ -5605,6 +5605,16 @@ ${handlers.length} left`,
 			return true;
 		}
 
+		// Transport Service controls operate outside Security encapsulation.
+		// Reassembled datagrams still pass through this check separately.
+		if (
+			cc instanceof TransportServiceCCSegmentRequest
+			|| cc instanceof TransportServiceCCSegmentComplete
+			|| cc instanceof TransportServiceCCSegmentWait
+		) {
+			return false;
+		}
+
 		// CRC16 belongs outside of Security encapsulation
 		if (cc instanceof CRC16CCCommandEncapsulation) {
 			return this.isSecurityLevelTooLow(cc.encapsulated);
