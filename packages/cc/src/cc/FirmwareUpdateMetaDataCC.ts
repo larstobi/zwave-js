@@ -254,8 +254,8 @@ export class FirmwareUpdateMetaDataCCAPI extends PhysicalCCAPI {
 		});
 		await this.host.sendCommand(cc, {
 			...this.commandOptions,
-			// Do not wait for Nonce Reports
-			s2VerifyDelivery: false,
+			// Recover the SPAN if the receiver cannot decrypt a firmware fragment.
+			s2VerifyDelivery: true,
 		});
 	}
 
