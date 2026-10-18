@@ -5283,6 +5283,13 @@ export class Driver
 			session: TransportServiceSession,
 			input: TransportServiceRXMachineInput,
 		): "completed" | undefined => {
+			// Timers and pending requests may outlive the session they belong to.
+			// In particular, session IDs can be reused by a new first segment.
+			if (
+				nodeSessions.transportService.get(command.sessionId) !== session
+			) {
+				return;
+			}
 			const machine = session.machine;
 
 			// Figure out what needs to be done for this input
@@ -5295,6 +5302,10 @@ export class Driver
 					startMissingSegmentTimeout(session);
 				} else if (machine.state.value === "requestMissing") {
 					// A segment is missing. Request it and restart the timeout
+					if (session.timeout) {
+						clearTimeout(session.timeout);
+						session.timeout = undefined;
+					}
 					this.controllerLog.logNode(command.nodeId, {
 						message: `Transport Service RX session #${command.sessionId}: Segment with offset ${machine.state.offset} missing - requesting it...`,
 						level: "debug",
@@ -5347,6 +5358,13 @@ export class Driver
 		function startMissingSegmentTimeout(
 			session: TransportServiceSession,
 		): void {
+			if (
+				nodeSessions.transportService.get(command.sessionId) !== session
+				|| session.machine.state.value === "success"
+				|| session.machine.state.value === "failure"
+			) {
+				return;
+			}
 			if (session.timeout) {
 				clearTimeout(session.timeout);
 			}
@@ -5367,6 +5385,9 @@ export class Driver
 			// We don't delete finished sessions when the last message is received in order to be able to
 			// handle when the SegmentComplete message gets lost. As soon as the node initializes a new session,
 			// we do know that the previous one is finished.
+			for (const previous of nodeSessions.transportService.values()) {
+				if (previous.timeout) clearTimeout(previous.timeout);
+			}
 			nodeSessions.transportService.clear();
 
 			this.controllerLog.logNode(command.nodeId, {
