@@ -673,8 +673,8 @@ export const secureMessageGeneratorS2: MessageGeneratorImplementation<
 				onMessageSent(msg, result);
 			},
 			{
-				// Only try getting a nonce once
-				maxSendAttempts: 1,
+				// Acquiring the SPAN must tolerate the same transmission failures as the secure command.
+				maxSendAttempts: msg.maxSendAttempts,
 			},
 		);
 		if (!nonceResp) {
