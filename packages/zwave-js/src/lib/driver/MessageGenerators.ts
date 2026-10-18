@@ -619,6 +619,88 @@ export const secureMessageGeneratorS0: MessageGeneratorImplementation<
 	);
 };
 
+/** Keeps S2 delivery verification active while the controller is transmitting. */
+async function* sendAndVerifyS2(
+	driver: Driver,
+	ctx: CCEncodingContext,
+	msg: SendDataMessage & ContainsCC<Security2CCMessageEncapsulation>,
+	onMessageSent: (msg: Message, result: Message | undefined) => void,
+	additionalTimeoutMs?: number,
+): AsyncGenerator<
+	Message,
+	{ response: Message; nonceReport?: Security2CCNonceReport },
+	Message
+> {
+	const nodeId = msg.command.nodeId as number;
+	const verifyDelivery =
+		msg.command.verifyDelivery
+		&& !msg.command.expectsCCResponse(driver)
+		&& !msg.command.getEncapsulatedCC(
+			CommandClasses.Supervision,
+			SupervisionCommand.Get,
+		);
+	const verifyAbort = new AbortController();
+	// A node may reject the encrypted command before the controller finishes routing retries.
+	// Keep the nonce wait alive until transmission settles, then allow the usual grace period.
+	const nonceVerification = verifyDelivery
+		? driver.waitForCommand<Security2CCNonceReport>(
+				(cc) =>
+					cc.nodeId === nodeId
+					&& cc instanceof Security2CCNonceReport,
+				undefined,
+				verifyAbort.signal,
+			)
+		: undefined;
+	try {
+		const response = yield* maybeTransportServiceGenerator(
+			driver,
+			ctx,
+			msg,
+			onMessageSent,
+			additionalTimeoutMs,
+		);
+		let nonceReport: Security2CCNonceReport | undefined;
+		if (isTransmitReport(response) && nonceVerification) {
+			const verifications: Promise<
+				| Security2CCNonceReport
+				| Security2CCMessageEncapsulation
+				| undefined
+			>[] = [nonceVerification];
+			const expectedSequenceNumber = driver
+				.getSecurityManager2(nodeId)!
+				.getNextPeerSequenceNumber(nodeId);
+			if (expectedSequenceNumber != undefined) {
+				verifications.push(
+					driver.waitForCommand<Security2CCMessageEncapsulation>(
+						(cc) =>
+							cc.nodeId === nodeId
+							&& cc instanceof Security2CCMessageEncapsulation
+							&& cc.sequenceNumber === expectedSequenceNumber,
+						undefined,
+						verifyAbort.signal,
+						// The next command still needs to be handled by its normal recipient.
+						{ consume: false },
+					),
+				);
+			}
+			const verification = await Promise.race([
+				...verifications,
+				wait(500),
+			]);
+			if (verification instanceof Security2CCNonceReport)
+				nonceReport = verification;
+		} else if (
+			containsCC(response)
+			&& response.command instanceof Security2CCNonceReport
+		) {
+			nonceReport = response.command;
+		}
+		return { response, nonceReport };
+	} finally {
+		verifyAbort.abort();
+	}
+}
+
 /** A message generator for security encapsulated messages (S2) */
 export const secureMessageGeneratorS2: MessageGeneratorImplementation<
 	SendDataMessage & ContainsCC
@@ -687,78 +769,13 @@ export const secureMessageGeneratorS2: MessageGeneratorImplementation<
 		// Storing the nonce is not necessary, this will be done automatically when the nonce is received
 	}
 
-	// Now send the actual secure command
-	let response = yield* maybeTransportServiceGenerator(
+	let { response, nonceReport } = yield* sendAndVerifyS2(
 		driver,
 		ctx,
-		msg,
+		msg as SendDataMessage & ContainsCC<Security2CCMessageEncapsulation>,
 		onMessageSent,
 		additionalTimeoutMs,
 	);
-
-	// If we want to make sure that a node understood a SET-type S2-encapsulated message, we either need to use
-	// Supervision and wait for the Supervision Report (handled by the simpleMessageGenerator), or we need to add a
-	// short delay between commands and wait if a NonceReport is received.
-	// However, in situations where timing is critical (e.g. S2 bootstrapping), verifyDelivery is set to false, and we don't do this.
-	let nonceReport: Security2CCNonceReport | undefined;
-	if (
-		isTransmitReport(response)
-		&& msg.command.verifyDelivery
-		&& !msg.command.expectsCCResponse(driver)
-		&& !msg.command.getEncapsulatedCC(
-			CommandClasses.Supervision,
-			SupervisionCommand.Get,
-		)
-	) {
-		// Wait for a possible Nonce Report, which would indicate that the node could
-		// not decrypt our command. Receiving the node's next encrypted command (i.e.
-		// with the next sequence number) instead proves a successful delivery, so we
-		// stop waiting early in that case to avoid artificially delaying command sequences.
-		const verifyAbort = new AbortController();
-		const expectedSequenceNumber = secMan.getNextPeerSequenceNumber(nodeId);
-		const verifications: Promise<
-			Security2CCNonceReport | Security2CCMessageEncapsulation | undefined
-		>[] = [
-			driver
-				.waitForCommand<Security2CCNonceReport>(
-					(cc) =>
-						cc.nodeId === nodeId
-						&& cc instanceof Security2CCNonceReport,
-					500,
-					verifyAbort.signal,
-				)
-				.catch(() => undefined),
-		];
-		if (expectedSequenceNumber != undefined) {
-			verifications.push(
-				driver
-					.waitForCommand<Security2CCMessageEncapsulation>(
-						(cc) =>
-							cc.nodeId === nodeId
-							&& cc instanceof Security2CCMessageEncapsulation
-							&& cc.sequenceNumber === expectedSequenceNumber,
-						500,
-						verifyAbort.signal,
-						// Receiving the node's next command must not consume it,
-						// so it is still handled (and answered) normally.
-						{ consume: false },
-					)
-					.catch(() => undefined),
-			);
-		}
-		const verification = await Promise.race(verifications);
-		// Clean up the remaining wait(s)
-		verifyAbort.abort();
-
-		if (verification instanceof Security2CCNonceReport) {
-			nonceReport = verification;
-		}
-	} else if (
-		containsCC(response)
-		&& response.command instanceof Security2CCNonceReport
-	) {
-		nonceReport = response.command;
-	}
 
 	if (nonceReport) {
 		if (nonceReport.SOS && nonceReport.receiverEI) {
@@ -792,18 +809,16 @@ export const secureMessageGeneratorS2: MessageGeneratorImplementation<
 
 		// Send the message again
 		msg.prepareRetransmission();
-		response = yield* maybeTransportServiceGenerator(
+		({ response, nonceReport } = yield* sendAndVerifyS2(
 			driver,
 			ctx,
-			msg,
+			msg as SendDataMessage
+				& ContainsCC<Security2CCMessageEncapsulation>,
 			onMessageSent,
 			additionalTimeoutMs,
-		);
+		));
 
-		if (
-			containsCC(response)
-			&& response.command instanceof Security2CCNonceReport
-		) {
+		if (nonceReport) {
 			// No dice
 			driver.controllerLog.logNode(nodeId, {
 				message: `failed to decode the message after re-transmission with SPAN extension, dropping the message.`,
