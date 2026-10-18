@@ -16,6 +16,7 @@ import {
 	FirmwareUpdateRequestStatus,
 	type FirmwareUpdateResult,
 	FirmwareUpdateStatus,
+	SPANExtension,
 	getEffectiveCCVersion,
 } from "@zwave-js/cc";
 import {
@@ -61,6 +62,22 @@ type PartialFirmwareUpdateResult = Pick<
 	FirmwareUpdateResult,
 	"status" | "waitTime"
 > & { success: boolean };
+
+export function getFirmwareUpdateFragmentSize(
+	maxNetPayloadSize: number,
+	maxFragmentSize: number | undefined,
+	securityClass: SecurityClass,
+): number {
+	// Resynchronizing S2 must not turn a firmware fragment into multiple radio packets.
+	// Fragment sizes are negotiated once and cannot change during the transfer.
+	return Math.min(
+		maxNetPayloadSize
+			- (securityClassIsS2(securityClass)
+				? SPANExtension.expectedLength
+				: 0),
+		maxFragmentSize ?? Number.POSITIVE_INFINITY,
+	);
+}
 
 /** Checks if a task belongs to a route rebuilding process */
 export function isFirmwareUpdateOTATask(t: Task<unknown>): boolean {
@@ -667,9 +684,12 @@ export abstract class FirmwareUpdateMixin
 			- (ccVersion >= 2 ? 2 : 0); // checksum
 
 		// Use the smallest allowed payload
-		const fragmentSizeSecure = Math.min(
+		const fragmentSizeSecure = getFirmwareUpdateFragmentSize(
 			maxNetPayloadSizeSecure,
-			meta.maxFragmentSize ?? Number.POSITIVE_INFINITY,
+			meta.maxFragmentSize,
+			this.driver.isCCSecure(fcc.ccId, this.id)
+				? (this.getHighestSecurityClass() ?? SecurityClass.None)
+				: SecurityClass.None,
 		);
 		const fragmentSizeNonSecure = Math.min(
 			maxNetPayloadSizeNonSecure,
