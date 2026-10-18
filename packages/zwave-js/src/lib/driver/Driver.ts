@@ -7038,6 +7038,49 @@ ${handlers.length} left`,
 							continue attemptMessage;
 						}
 
+						if (
+							e.code === ZWaveErrorCodes.Controller_CallbackNOK
+							&& isTransmitReport(e.context)
+							&& (e.context.transmitStatus
+								=== TransmitStatus.NoAck
+								|| e.context.transmitStatus
+									=== TransmitStatus.Fail)
+							&& isSendData(msg)
+							&& containsCC(msg)
+							&& msg.command
+								instanceof Security2CCMessageEncapsulation
+							&& msg.command.isSinglecast()
+							&& msg.expectsNodeUpdate(this)
+						) {
+							// A missing ACK does not rule out a delayed S2 response. Allow the
+							// normal response window after the final attempt before discarding
+							// the transaction that can use an SOS to recover its SPAN.
+							const sent = msg;
+							sent.markAsCompleted();
+							const timeout =
+								Math.ceil((sent.rtt ?? 0) / 1e6)
+								+ this.getReportTimeout(sent);
+							this.controllerLog.logNode(sent.getNodeId()!, {
+								message:
+									"Transmission attempts exhausted, waiting for a late S2 response...",
+								level: "verbose",
+							});
+							try {
+								sent.prematureNodeUpdate =
+									await this.waitForMessage(
+										(response) =>
+											sent.isExpectedNodeUpdate(
+												this,
+												response,
+											),
+										timeout,
+									);
+								break attemptMessage;
+							} catch {
+								// Preserve the original transmission failure if no matching response arrives.
+							}
+						}
+
 						zwError = e;
 					}
 
