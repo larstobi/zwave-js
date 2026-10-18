@@ -1,13 +1,19 @@
 import * as crypto from "node:crypto";
 
 import { isUint8Array } from "@zwave-js/shared";
-import { test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 
 import { SecurityClass } from "../definitions/SecurityClass.js";
 import { ZWaveErrorCodes } from "../error/ZWaveError.js";
 import { assertZWaveError } from "../test/assertZWaveError.js";
+import { highResTimestamp } from "../util/date.js";
 
 import { SecurityManager2 } from "./Manager2.js";
+import { SPANState } from "./Manager2Types.js";
+
+afterEach(() => {
+	vi.useRealTimers();
+});
 
 async function dummyInit(
 	man: SecurityManager2,
@@ -73,6 +79,56 @@ test("nextNonce() -> two nonces should be different", async (t) => {
 	const nonce2 = await man.nextNonce(2);
 	t.expect(nonce1).not.toStrictEqual(nonce2);
 });
+
+test("retainSPAN() -> releasing one transmission does not expire another's retained nonce", async (t) => {
+	vi.useFakeTimers();
+	const man = await SecurityManager2.create();
+	await dummyInit(man, { nodeId: 2 });
+	const nonce = await man.nextNonce(2, true);
+	const state = man.getSPANState(2);
+	if (state.type !== SPANState.SPAN) throw new Error("Expected SPAN");
+	const release1 = man.retainSPAN(2, nonce)!;
+	const release2 = man.retainSPAN(2, nonce)!;
+
+	release1();
+	release1();
+	vi.advanceTimersByTime(20000);
+	t.expect(state.currentSPAN!.expires).toBeGreaterThan(highResTimestamp());
+	release2();
+	vi.advanceTimersByTime(501);
+	t.expect(state.currentSPAN!.expires).toBeLessThan(highResTimestamp());
+});
+
+test("retainSPAN() -> a cached command cannot retain a different nonce", async (t) => {
+	const man = await SecurityManager2.create();
+	await dummyInit(man, { nodeId: 2 });
+	const nonce = await man.nextNonce(2, true);
+	await man.nextNonce(2, true);
+
+	t.expect(man.retainSPAN(2, nonce)).toBeUndefined();
+});
+
+test.each(["consume", "replace"] as const)(
+	"retainSPAN() -> release does not restore a consumed or replaced SPAN (%s)",
+	async (action) => {
+		const man = await SecurityManager2.create();
+		await dummyInit(man, { nodeId: 2 });
+		const nonce = await man.nextNonce(2, true);
+		const release = man.retainSPAN(2, nonce)!;
+
+		if (action === "consume") {
+			await man.nextNonce(2);
+			release();
+			const state = man.getSPANState(2);
+			if (state.type !== SPANState.SPAN) throw new Error("Expected SPAN");
+			expect(state.currentSPAN).toBeUndefined();
+		} else {
+			await man.generateNonce(2);
+			release();
+			expect(man.getSPANState(2).type).toBe(SPANState.LocalEI);
+		}
+	},
+);
 
 test("initializeSPAN() -> should throw if either entropy input does not have length 16", async (t) => {
 	const man = await SecurityManager2.create();
