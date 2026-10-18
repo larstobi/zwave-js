@@ -589,8 +589,17 @@ export class Security2CCAPI extends CCAPI {
 			});
 		} catch (e) {
 			if (isTransmissionError(e)) {
-				// The nonce could not be sent, invalidate it
-				securityManager.deleteNonce(this.endpoint.nodeId);
+				// A response or another exchange may have replaced this nonce while
+				// the controller was still retrying its transmission.
+				const current = securityManager.getSPANState(
+					this.endpoint.nodeId,
+				);
+				if (
+					current.type === SPANState.LocalEI
+					&& current.receiverEI === receiverEI
+				) {
+					securityManager.deleteNonce(this.endpoint.nodeId);
+				}
 				return false;
 			} else {
 				// Pass other errors through
