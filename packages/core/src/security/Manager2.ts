@@ -38,7 +38,7 @@ import { CtrDRBG } from "./ctr_drbg.js";
 
 // How many sequence numbers are remembered for each node when checking for duplicates
 const SINGLECAST_MAX_SEQ_NUMS = 1; // more than 1 will confuse the certification test tool :(
-// How long a singlecast nonce used for encryption will be kept around to attempt decryption of in-flight messages
+// How long to keep a singlecast nonce for collision recovery after transmission
 const SINGLECAST_NONCE_EXPIRY_NS = 500 * 1000 * 1000; // 500 ms in nanoseconds
 
 export class SecurityManager2 {
@@ -57,6 +57,7 @@ export class SecurityManager2 {
 
 	/** A map of SPAN states for each node */
 	private spanTable = new Map<number, SPANTableEntry>();
+	private retainedSPANs = new WeakMap<BytesView, number>();
 	/** A map of temporary keys for each node that are used for the key exchange */
 	public readonly tempKeys = new Map<number, TempNetworkKeys>();
 	/** A map of sequence numbers that were last used in communication with a node */
@@ -373,6 +374,34 @@ export class SecurityManager2 {
 				}
 			: undefined;
 		return nonce;
+	}
+
+	/** Keeps the given collision-recovery SPAN valid until the returned callback is called. */
+	public retainSPAN(
+		peerNodeId: number,
+		nonce: BytesView,
+	): (() => void) | undefined {
+		const state = this.spanTable.get(peerNodeId);
+		if (state?.type !== SPANState.SPAN) return;
+		const span = state.currentSPAN;
+		// A cached transmission must not extend the lifetime of a newer SPAN.
+		if (!span || span.nonce !== nonce) return;
+
+		this.retainedSPANs.set(nonce, (this.retainedSPANs.get(nonce) ?? 0) + 1);
+		span.expires = Number.POSITIVE_INFINITY;
+		let released = false;
+		return () => {
+			if (released) return;
+			released = true;
+			const remaining = this.retainedSPANs.get(nonce)! - 1;
+			if (remaining > 0) {
+				this.retainedSPANs.set(nonce, remaining);
+			} else {
+				this.retainedSPANs.delete(nonce);
+				// Only update the captured entry, never restore a consumed or replaced SPAN.
+				span.expires = highResTimestamp() + SINGLECAST_NONCE_EXPIRY_NS;
+			}
+		};
 	}
 
 	/** Returns the next sequence number to use for outgoing messages to the given node */

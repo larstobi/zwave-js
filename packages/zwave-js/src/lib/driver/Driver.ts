@@ -7107,6 +7107,14 @@ ${handlers.length} left`,
 		msg: Message,
 		transactionSource?: string,
 	): Promise<Message | undefined> {
+		// Routing and retries can keep a serialized command in flight for seconds.
+		// The node may transmit with the same SPAN before receiving our command.
+		const releaseSPAN =
+			isSendData(msg)
+			&& containsCC(msg)
+			&& msg.command instanceof Security2CCMessageEncapsulation
+				? msg.command.retainSPAN(this.getEncodingContext())
+				: undefined;
 		const result = createDeferredPromise<Message | undefined>();
 		this.serialAPIQueue.add({
 			msg,
@@ -7127,7 +7135,7 @@ ${handlers.length} left`,
 			},
 		});
 
-		return result;
+		return result.finally(releaseSPAN);
 	}
 
 	private mayRetrySerialAPICommand(

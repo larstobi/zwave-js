@@ -1675,7 +1675,7 @@ export class Security2CCMessageEncapsulation extends Security2CC {
 
 	public readonly securityClass?: SecurityClass;
 
-	// Only used for testing/debugging purposes
+	// Encryption state used for collision recovery and debugging
 	private key?: BytesView;
 	private iv?: BytesView;
 	private authData?: BytesView;
@@ -1771,6 +1771,15 @@ export class Security2CCMessageEncapsulation extends Security2CC {
 	public override prepareRetransmission(): void {
 		super.prepareRetransmission();
 		this.sequenceNumber = undefined;
+	}
+
+	/** Keeps this serialized singlecast's SPAN available for collision recovery during transmission. */
+	public retainSPAN(ctx: CCEncodingContext): (() => void) | undefined {
+		if (!this.isSinglecast() || !this.iv) return;
+		return assertSecurityTX(ctx, this.nodeId).retainSPAN(
+			this.nodeId,
+			this.iv,
+		);
 	}
 
 	public hasMOSExtension(): boolean {
