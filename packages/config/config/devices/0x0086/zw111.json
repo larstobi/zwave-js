@@ -488,6 +488,14 @@
 		}
 	],
 	"compat": {
+		// Some ZW111 devices send Meter V3 reports when the cached CC version is V1.
+		"commandClasses": {
+			"add": {
+				"Meter": {
+					"version": 3
+				}
+			}
+		},
 		"mapBasicSet": "event",
 		"treatMultilevelSwitchSetAsEvent": true
 	},

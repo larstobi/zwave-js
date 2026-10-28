@@ -14,6 +14,30 @@ test("Z-TRM3 with commandClasses.add compat should work", async (t) => {
 	t.expect(config?.compat?.addCCs?.get(49)?.endpoints.size).toBe(3);
 }, 60000); // This test might take a while
 
+test("ZW111 variants override the Meter version", async (t) => {
+	const configManager = new ConfigManager();
+	for (const [productType, productId] of [
+		[0x0003, 0x006f],
+		[0x0103, 0x006f],
+		[0x01f3, 0x000f],
+		[0x01f3, 0x006f],
+		[0x0203, 0x006f],
+		[0x0303, 0x006f],
+	]) {
+		const config = await configManager.lookupDevice(
+			0x0086,
+			productType,
+			productId,
+			"2.4",
+		);
+		t.expect(config?.compat?.addCCs?.get(0x32)?.endpoints.get(0)).toEqual({
+			version: 3,
+		});
+		t.expect(config?.compat?.mapBasicSet).toBe("event");
+		t.expect(config?.compat?.treatMultilevelSwitchSetAsEvent).toBe(true);
+	}
+}, 60000);
+
 test("Associations on endpoints should work - including imports", async (t) => {
 	// Logic Group ZDB5100
 
